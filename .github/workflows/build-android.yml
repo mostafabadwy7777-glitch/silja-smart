@@ -42,19 +42,35 @@ jobs:
             --platform android \
             --profile preview \
             --non-interactive \
-            --no-wait 2>&1 | tee eas-build-output.txt
+            --no-wait \
+            --json > build-start.json
+          cat build-start.json
 
-      - name: Extract build URL and download APK
+      - name: Wait for EAS build and download APK
         working-directory: mobile-app
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
         run: |
-          BUILD_ID=$(grep -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' eas-build-output.txt | head -n1)
+          BUILD_ID=$(node -e "console.log(JSON.parse(require('fs').readFileSync('build-start.json','utf8'))[0].id)")
           echo "Build ID: $BUILD_ID"
-          npx eas-cli build:view "$BUILD_ID" --json > build-info.json || true
-          npx eas-cli build:wait "$BUILD_ID" || true
-          npx eas-cli build:view "$BUILD_ID" --json > build-info-final.json
-          ARTIFACT_URL=$(node -e "console.log(JSON.parse(require('fs').readFileSync('build-info-final.json','utf8')).artifacts.buildUrl)")
+
+          STATUS="unknown"
+          for i in $(seq 1 60); do
+            npx eas-cli build:view "$BUILD_ID" --json > build-status.json
+            STATUS=$(node -e "console.log(JSON.parse(require('fs').readFileSync('build-status.json','utf8')).status)")
+            echo "[$i] status: $STATUS"
+            if [ "$STATUS" = "finished" ] || [ "$STATUS" = "errored" ] || [ "$STATUS" = "canceled" ]; then
+              break
+            fi
+            sleep 30
+          done
+
+          if [ "$STATUS" != "finished" ]; then
+            echo "Build did not finish successfully (status: $STATUS)"
+            exit 1
+          fi
+
+          ARTIFACT_URL=$(node -e "console.log(JSON.parse(require('fs').readFileSync('build-status.json','utf8')).artifacts.buildUrl)")
           echo "APK URL: $ARTIFACT_URL"
           curl -L "$ARTIFACT_URL" -o app-release.apk
 
