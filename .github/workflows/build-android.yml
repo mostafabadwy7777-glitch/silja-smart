@@ -42,8 +42,7 @@ jobs:
             --platform android \
             --profile preview \
             --non-interactive \
-            --no-wait > eas-build-output.txt
-          cat eas-build-output.txt
+            --no-wait 2>&1 | tee eas-build-output.txt
 
       - name: Extract build URL and download APK
         working-directory: mobile-app
