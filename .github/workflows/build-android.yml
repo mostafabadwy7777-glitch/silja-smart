@@ -57,7 +57,7 @@ jobs:
           STATUS="unknown"
           for i in $(seq 1 60); do
             npx eas-cli build:view "$BUILD_ID" --json > build-status.json
-            STATUS=$(node -e "console.log(JSON.parse(require('fs').readFileSync('build-status.json','utf8')).status)")
+            STATUS=$(node -e "console.log(JSON.parse(require('fs').readFileSync('build-status.json','utf8')).status.toLowerCase())")
             echo "[$i] status: $STATUS"
             if [ "$STATUS" = "finished" ] || [ "$STATUS" = "errored" ] || [ "$STATUS" = "canceled" ]; then
               break
