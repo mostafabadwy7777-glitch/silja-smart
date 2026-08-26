@@ -1,0 +1,97 @@
+name: Build Android APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Unzip uploaded project archive
+        run: |
+          ZIP_FILE=$(find . -maxdepth 1 -iname "*.zip" | head -n1)
+          if [ -z "$ZIP_FILE" ]; then
+            echo "No .zip file found in repo root. Upload your project zip to the repo root first."
+            exit 1
+          fi
+          echo "Extracting $ZIP_FILE"
+          unzip -o "$ZIP_FILE" -d .
+          rm -f "$ZIP_FILE"
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install NDK and CMake
+        run: |
+          yes | sdkmanager --licenses > /dev/null || true
+          sdkmanager --install "ndk;26.1.10909125" "cmake;3.22.1"
+
+      - name: Install dependencies
+        working-directory: mobile-app
+        run: npm install
+
+      - name: Patch react-native gradle-plugin for Gradle 8.10+
+        working-directory: mobile-app
+        run: node ./scripts/patch-rn-gradle-plugin.js
+
+      - name: Decode keystore
+        working-directory: mobile-app
+        run: |
+          echo "${{ secrets.SILJA_KEYSTORE_B64 }}" | base64 -d > silja-release.keystore
+
+      - name: Set versionCode from run number
+        working-directory: mobile-app
+        run: |
+          node -e "
+            const fs = require('fs');
+            const p = './app.json';
+            const j = JSON.parse(fs.readFileSync(p, 'utf8'));
+            j.expo.android.versionCode = ${{ github.run_number }};
+            fs.writeFileSync(p, JSON.stringify(j, null, 2));
+            console.log('versionCode set to ${{ github.run_number }}');
+          "
+
+      - name: Prebuild native Android project
+        working-directory: mobile-app
+        env:
+          CI: "1"
+        run: npx expo prebuild --platform android
+
+      - name: Pin Gradle/AGP/Kotlin versions
+        working-directory: mobile-app
+        run: node ./scripts/pin-gradle-versions.js
+
+      - name: Apply release signing config
+        working-directory: mobile-app
+        run: node ./scripts/apply-android-signing.js
+
+      - name: Build release APK
+        working-directory: mobile-app/android
+        env:
+          SILJA_KEYSTORE_PATH: ${{ github.workspace }}/mobile-app/silja-release.keystore
+          SILJA_KEYSTORE_PASSWORD: ${{ secrets.SILJA_KEYSTORE_PASSWORD }}
+          SILJA_KEY_ALIAS: silja-smart-key
+        run: ./gradlew assembleRelease
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: silja-smart-release-${{ github.run_number }}
+          path: mobile-app/android/app/build/outputs/apk/release/app-release.apk
