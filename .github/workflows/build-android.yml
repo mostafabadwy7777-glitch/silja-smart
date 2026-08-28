@@ -5,11 +5,32 @@ on:
   push:
     branches: [main]
 
+permissions:
+  contents: read
+  actions: write   # لازم عشان نقدر نمسح الـ artifacts القديمة من صفحة Actions
+
 jobs:
   build:
     runs-on: ubuntu-latest
 
     steps:
+      - name: Delete old build artifacts (APKs) to free up storage
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "Fetching list of existing artifacts..."
+          IDS=$(gh api "repos/${{ github.repository }}/actions/artifacts?per_page=100" \
+            --jq '.artifacts[].id')
+
+          if [ -z "$IDS" ]; then
+            echo "No old artifacts found — nothing to delete."
+          else
+            for ID in $IDS; do
+              echo "Deleting artifact ID $ID"
+              gh api -X DELETE "repos/${{ github.repository }}/actions/artifacts/$ID" || true
+            done
+          fi
+
       - name: Checkout
         uses: actions/checkout@v4
 
@@ -30,11 +51,9 @@ jobs:
           node-version: 20
 
       - name: Install dependencies
-        working-directory: mobile-app
         run: npm install
 
       - name: Build on EAS (free tier)
-        working-directory: mobile-app
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
         run: |
@@ -47,7 +66,6 @@ jobs:
           cat build-start.json
 
       - name: Wait for EAS build and download APK
-        working-directory: mobile-app
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
         run: |
@@ -78,4 +96,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: silja-smart-release-${{ github.run_number }}
-          path: mobile-app/app-release.apk
+          path: app-release.apk
+          retention-days: 7
