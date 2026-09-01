@@ -60,13 +60,25 @@ jobs:
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
         run: |
-          eas build \
-            --platform android \
-            --profile preview \
-            --non-interactive \
-            --no-wait \
-            --json > build-start.json
-          cat build-start.json
+          for i in {1..5}; do
+            echo "Attempt $i: Triggering EAS Build..."
+            if eas build \
+              --platform android \
+              --profile preview \
+              --non-interactive \
+              --no-wait \
+              --json > build-start.json; then
+              echo "Build triggered successfully!"
+              cat build-start.json
+              break
+            fi
+            echo "GraphQL request failed, retrying in 10 seconds..."
+            sleep 10
+            if [ $i -eq 5 ]; then
+              echo "Failed to start EAS build after 5 attempts."
+              exit 1
+            fi
+          done
 
       - name: Wait for EAS build and download APK
         env:
