@@ -12,6 +12,7 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 120
 
     steps:
       - name: Delete old build artifacts (APKs) to free up storage
@@ -50,14 +51,16 @@ jobs:
         with:
           node-version: 20
 
-      - name: Install dependencies
-        run: npm install
+      - name: Install dependencies & EAS CLI
+        run: |
+          npm install
+          npm install -g eas-cli
 
       - name: Build on EAS (free tier)
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
         run: |
-          npx eas-cli@latest build \
+          eas build \
             --platform android \
             --profile preview \
             --non-interactive \
@@ -69,24 +72,48 @@ jobs:
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
         run: |
+          set -euo pipefail
           BUILD_ID=$(node -e "console.log(JSON.parse(require('fs').readFileSync('build-start.json','utf8'))[0].id)")
           echo "Build ID: $BUILD_ID"
 
+          TIMEOUT_SECONDS=$((90 * 60))
+          START_TIME=$(date +%s)
           STATUS="unknown"
-          for i in $(seq 1 60); do
-            npx eas-cli@latest build:view "$BUILD_ID" --json > build-status.json
-            STATUS=$(node -e "console.log(JSON.parse(require('fs').readFileSync('build-status.json','utf8')).status.toLowerCase())")
-            echo "[$i] status: $STATUS"
-            if [ "$STATUS" = "finished" ] || [ "$STATUS" = "errored" ] || [ "$STATUS" = "canceled" ]; then
-              break
-            fi
-            sleep 30
-          done
+          i=0
 
-          if [ "$STATUS" != "finished" ]; then
-            echo "Build did not finish successfully (status: $STATUS)"
-            exit 1
-          fi
+          while true; do
+            i=$((i + 1))
+            NOW=$(date +%s)
+            ELAPSED=$((NOW - START_TIME))
+
+            if [ "$ELAPSED" -ge "$TIMEOUT_SECONDS" ]; then
+              echo "Timed out after 90 minutes. Last status: $STATUS"
+              exit 1
+            fi
+
+            # Fetch status safely without crashing on transient GraphQL/Network errors
+            if eas build:view "$BUILD_ID" --json > build-status.json 2>/dev/null; then
+              STATUS=$(node -e "try { console.log(JSON.parse(require('fs').readFileSync('build-status.json','utf8')).status.toLowerCase()); } catch(e) { console.log('unknown'); }")
+            else
+              STATUS="retrying_network"
+            fi
+
+            echo "[$i] status: $STATUS (elapsed ${ELAPSED}s)"
+
+            case "$STATUS" in
+              finished)
+                break
+                ;;
+              errored|canceled)
+                echo "Build failed with status: $STATUS"
+                cat build-status.json 2>/dev/null || true
+                exit 1
+                ;;
+              *)
+                sleep 30
+                ;;
+            esac
+          done
 
           ARTIFACT_URL=$(node -e "console.log(JSON.parse(require('fs').readFileSync('build-status.json','utf8')).artifacts.buildUrl)")
           echo "APK URL: $ARTIFACT_URL"
