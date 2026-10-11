@@ -15,125 +15,71 @@ jobs:
     timeout-minutes: 120
 
     steps:
-      - name: Delete old build artifacts (APKs) to free up storage
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          echo "Fetching list of existing artifacts..."
-          IDS=$(gh api "repos/${{ github.repository }}/actions/artifacts?per_page=100" \
-            --jq '.artifacts[].id')
-
-          if [ -z "$IDS" ]; then
-            echo "No old artifacts found — nothing to delete."
-          else
-            for ID in $IDS; do
-              echo "Deleting artifact ID $ID"
-              gh api -X DELETE "repos/${{ github.repository }}/actions/artifacts/$ID" || true
-            done
-          fi
-
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Unzip uploaded project archive
+      - name: Extract project ZIP
         run: |
-          ZIP_FILE=$(find . -maxdepth 1 -iname "*.zip" | head -n1)
-          if [ -z "$ZIP_FILE" ]; then
-            echo "No .zip file found in repo root. Upload your project zip to the repo root first."
+          set -e
+          ZIP_FILE=$(find . -maxdepth 1 -type f -iname "*.zip" | head -n1)
+
+          if [ -n "$ZIP_FILE" ]; then
+            mkdir -p extracted
+            unzip -oq "$ZIP_FILE" -d extracted
+          fi
+
+      - name: Locate project root
+        run: |
+          set -e
+          PROJECT_DIR=$(find . -type f -name package.json \
+            -not -path "*/node_modules/*" \
+            -not -path "*/.git/*" \
+            -printf '%h\n' | head -n1)
+
+          if [ -z "$PROJECT_DIR" ]; then
+            echo "::error::package.json not found. Check the uploaded project ZIP."
             exit 1
           fi
-          echo "Extracting $ZIP_FILE"
-          unzip -o "$ZIP_FILE" -d .
-          rm -f "$ZIP_FILE"
+
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+          echo "Project root: $PROJECT_DIR"
+          ls -la "$PROJECT_DIR"
 
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: 20
+          cache: ''
 
-      - name: Install dependencies & EAS CLI
+      - name: Install dependencies
+        working-directory: ${{ env.PROJECT_DIR }}
         run: |
           npm install
           npm install -g eas-cli
 
-      - name: Build on EAS (free tier)
+      - name: Validate Expo project
+        working-directory: ${{ env.PROJECT_DIR }}
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
         run: |
-          for i in {1..5}; do
-            echo "Attempt $i: Triggering EAS Build..."
-            if eas build \
-              --platform android \
-              --profile preview \
-              --non-interactive \
-              --no-wait \
-              --json > build-start.json; then
-              echo "Build triggered successfully!"
-              cat build-start.json
-              break
-            fi
-            echo "GraphQL request failed, retrying in 10 seconds..."
-            sleep 10
-            if [ $i -eq 5 ]; then
-              echo "Failed to start EAS build after 5 attempts."
-              exit 1
-            fi
-          done
+          test -f package.json
+          test -f app.json || test -f app.config.js || test -f app.config.ts
+          eas --version
+          eas whoami
 
-      - name: Wait for EAS build and download APK
+      - name: Build Android APK
+        working-directory: ${{ env.PROJECT_DIR }}
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
         run: |
-          set -euo pipefail
-          BUILD_ID=$(node -e "console.log(JSON.parse(require('fs').readFileSync('build-start.json','utf8'))[0].id)")
-          echo "Build ID: $BUILD_ID"
+          eas build \
+            --platform android \
+            --profile preview \
+            --non-interactive
 
-          TIMEOUT_SECONDS=$((90 * 60))
-          START_TIME=$(date +%s)
-          STATUS="unknown"
-          i=0
-
-          while true; do
-            i=$((i + 1))
-            NOW=$(date +%s)
-            ELAPSED=$((NOW - START_TIME))
-
-            if [ "$ELAPSED" -ge "$TIMEOUT_SECONDS" ]; then
-              echo "Timed out after 90 minutes. Last status: $STATUS"
-              exit 1
-            fi
-
-            # Fetch status safely without crashing on transient GraphQL/Network errors
-            if eas build:view "$BUILD_ID" --json > build-status.json 2>/dev/null; then
-              STATUS=$(node -e "try { console.log(JSON.parse(require('fs').readFileSync('build-status.json','utf8')).status.toLowerCase()); } catch(e) { console.log('unknown'); }")
-            else
-              STATUS="retrying_network"
-            fi
-
-            echo "[$i] status: $STATUS (elapsed ${ELAPSED}s)"
-
-            case "$STATUS" in
-              finished)
-                break
-                ;;
-              errored|canceled)
-                echo "Build failed with status: $STATUS"
-                cat build-status.json 2>/dev/null || true
-                exit 1
-                ;;
-              *)
-                sleep 30
-                ;;
-            esac
-          done
-
-          ARTIFACT_URL=$(node -e "console.log(JSON.parse(require('fs').readFileSync('build-status.json','utf8')).artifacts.buildUrl)")
-          echo "APK URL: $ARTIFACT_URL"
-          curl -L "$ARTIFACT_URL" -o app-release.apk
-
-      - name: Upload APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: silja-smart-release-${{ github.run_number }}
-          path: app-release.apk
-          retention-days: 7
+      - name: Download build artifact
+        working-directory: ${{ env.PROJECT_DIR }}
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        run: |
+          echo "EAS build finished. Check the EAS build output for the APK link."
