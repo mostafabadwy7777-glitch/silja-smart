@@ -31,13 +31,14 @@ jobs:
       - name: Locate project root
         run: |
           set -e
-          PROJECT_DIR=$(find . -type f -name package.json \
+          PROJECT_DIR=$(find . -type f \( -name app.json -o -name app.config.js -o -name app.config.ts \) \
             -not -path "*/node_modules/*" \
             -not -path "*/.git/*" \
-            -printf '%h\n' | head -n1)
+            -not -path "*/server/*" \
+            -printf '%d %h\n' | sort -n | head -n1 | cut -d' ' -f2-)
 
           if [ -z "$PROJECT_DIR" ]; then
-            echo "::error::package.json not found. Check the uploaded project ZIP."
+            echo "::error::Expo project (app.json) not found in the ZIP."
             exit 1
           fi
 
@@ -62,8 +63,9 @@ jobs:
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
         run: |
-          test -f package.json
-          test -f app.json || test -f app.config.js || test -f app.config.ts
+          test -f package.json || { echo "::error::package.json missing in $PWD"; exit 1; }
+          test -f app.json || test -f app.config.js || test -f app.config.ts || { echo "::error::no app config in $PWD"; exit 1; }
+          [ -n "$EXPO_TOKEN" ] || { echo "::error::EXPO_TOKEN secret is empty. Add it in Settings > Secrets and variables > Actions."; exit 1; }
           eas --version
           eas whoami
 
